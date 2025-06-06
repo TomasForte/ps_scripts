@@ -4,7 +4,7 @@ Get-ChildItem -Recurse -File |
 Where-Object {$_.Extension -match "\.(mp3|flac|wav|aac|ogg|m4a|opus|alac|ape|tak)$" }| 
 ForEach-Object {
     if ($_.Extension -eq ".flac"){
-        $metadata = ffprobe -i $_.FullName -show_entries format_tags=album,title -v  quiet -of csv=p=0
+        $metadata = ffprobe -i $_.FullName -show_entries format_tags=album,title -v quit -of csv=p=0
 
 
 
