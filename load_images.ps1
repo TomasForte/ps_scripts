@@ -9,8 +9,8 @@ function CleanPathBreakingSymbols {
 
     $inputString = $inputString -replace "[<>:?*|\\/]", ""
     #Inside regex \ can also be used as escape character but i kept the ` to keep it simple
-    $inputString = $inputString -replace "[[]", "``[]"
-    return $inputString -replace "[`]]", "``]]"
+    #$inputString = $inputString -replace "[[]", "``["
+    return $inputString 
 
 }
 
@@ -48,18 +48,23 @@ $page = Invoke-WebRequest -Uri $URL
 $table = $page.ParsedHtml.GetElementsByTagName("table")[0]
 $tableBody = $table.getElementsByTagName("tbody")
 $path = "C:\Users\Utilizador\Desktop\Badges2"
+
+Write-Host "Loading source from images in disk"
 Get-ChildItem -Path $Path -File -Recurse | Select-Object -ExpandProperty FullName | Out-File "filenames.txt" -Encoding UTF8
 $sourceInFolder = exiftool -@ .\filenames.txt -q -p '$Source' 
 
+
 try {
     $number  = 0
-
+    Write-Host "Starting process"
     ForEach ($tbody in $tableBody){
+        Write-Host "Finding rows with new images"
         #remove rows where the image is already downloaded
         $validRows = $tbody.rows | Where-Object {
             $cellImage = $_.cells[4].GetElementsByTagName("a")[0].href
             $sourceInFolder -notcontains $cellImage
         }
+        Write-Host "Starting Downloads"
         ForEach ($row in $validRows)
         {
             $number++
@@ -82,7 +87,7 @@ try {
             $dirPath="$path\$cellCategory\$cellChallenge"
             
             #---check if there dir for to store the image create it if needed
-            if (!(Test-Path $dirPath))
+            if (!(Test-Path -LiteralPath $dirPath))
             {
                 try{
                     New-Item -ItemType Directory -Path $dirPath
@@ -90,7 +95,7 @@ try {
                     Write-Host "folder couldn't be created"
                     Write-Host "Path $dirPath"
                     Write-Host "challenge $cellChallenge"
-                    Write-Host ("Error: $($_.Exception.Message)")
+                    Write-Host ("Error creating folder: $($_.Exception.Message)")
                     exit 1
 
                 }
@@ -100,24 +105,28 @@ try {
                 $Image = Invoke-WebRequest -Uri $cellImage -UseBasicParsing
                 
                 $baseName = "$cellChallenge $status x$cellRun"
-                $numberFiles = (Get-ChildItem -Path $dirPath -File -Filter "*$baseName*").Count
-                
+                $numberFiles = (Get-ChildItem -LiteralPath $dirPath -File -Filter "*$baseName*").Count
+                Write-Host "1"
                 #the extension in the image url might not be the correct like https://i.imgur.com/xxxxxx.png 
                 #can actually be a gif so i need to check the codec of the image and saved in a correct file extension
                 $extension = Get-ImageExtension $Image.Headers["Content-Type"]
                 $outputFile = "$dirPath\$($baseName)_$(($numberFiles+1).ToString("D3"))$extension"
-                $Image.Content | Set-Content -Path $outputFile -Encoding Byte
+                Write-Host "2"
+                $Image.Content | Set-Content -LiteralPath $outputFile -Encoding Byte
+                Write-Host "3"
                 Write-Host "$outputFile"
             } catch {
                 Write-host ("$cellChallenge image could not be downloaded")
                 Write-Host ("Path - $outputFile")
-                Write-Host ("Error: $($_.Exception.Message)")
+                Write-Host ("Error downloading image: $($_.Exception.Message)")
                 exit 1
             }
 
             try{
-                $outputFile | Out-File "param.txt" -Encoding utf8
-                exiftool -xmp:Source=$cellImage -@ "param.txt"
+                # $outputFile | Out-File "param.txt" -Encoding utf8
+                # exiftool -xmp:Source=$cellImage -@ "param.txt"
+                # 
+                exiftool -xmp:Source=$cellImage $outputFile
 
                 #exiftool sometimes exits without terminal error so i need to throw error based one the exitcode
                 if ($LASTEXITCODE -ne 0) {
@@ -126,22 +135,23 @@ try {
             } catch {
                 Write-Host "could't add source to image metada"
                 Write-Host "path: $dirPath File $baseName"
-                Write-Host ("Error: $($_.Exception.Message)")
+                Write-Host ("Error adding metadata to file: $($_.Exception.Message)")
                 Remove-Item -Path "$($outputFile)"
                 exit 1
             }
 
             try{
-                Remove-Item -Path "$($outputFile)_original"
+                Remove-Item -LiteralPath "$($outputFile)_original"
             } catch {
                 Write-Host "could delete backup file created by exiftool"
-                Write-Host ("Error: $($_.Exception.Message)")
+                Write-Host ("Error deleting BackupFile: $($_.Exception.Message)")
                 exit 1
             }   
         }            
     }
 } catch {
-    Write-Host ("Error: $($_.Exception.Message)")
+    Write-Host ("Error in Main Loop: $($_.Exception.Message)")
+    Write-Host ("")
 }
 
 
