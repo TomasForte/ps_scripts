@@ -25,7 +25,7 @@ function Get-ImageExtension {
         "image/gif"  { return ".gif" }
         "image/tiff" { return ".tiff" }
         default      { return ".unknown" } 
-}
+    }
 }
 
 #============================WARNING========================
@@ -42,48 +42,87 @@ function Get-ImageExtension {
 
 
 $ErrorActionPreference = "Stop"
+
+$path = "C:\Users\Utilizador\Desktop\Badges2"
+$path = $path -replace '\.+$', ''
+Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Loading source from images in disk"
+Get-ChildItem -Path $path -File -Recurse | Select-Object -ExpandProperty FullName | Out-File "filenames.txt" -Encoding UTF8
+$sourceInFolder = exiftool -@ .\filenames.txt -q -p '$Source'
+
+Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Requesting site"
 $page = Invoke-WebRequest -Uri $URL 
 # ParseHtml only works with powershell 5 or bellow and relly on internet explorer-based parsing
 # powershell 5 is still the default on windows 11 so it should still work when i update my system
 $table = $page.ParsedHtml.GetElementsByTagName("table")[0]
 $tableBody = $table.getElementsByTagName("tbody")
-$path = "C:\Users\Utilizador\Desktop\Badges2"
-
-Write-Host "Loading source from images in disk"
-Get-ChildItem -Path $Path -File -Recurse | Select-Object -ExpandProperty FullName | Out-File "filenames.txt" -Encoding UTF8
-$sourceInFolder = exiftool -@ .\filenames.txt -q -p '$Source' 
 
 
-try {
-    $number  = 0
-    Write-Host "Starting process"
-    ForEach ($tbody in $tableBody){
-        Write-Host "Finding rows with new images"
-        #remove rows where the image is already downloaded
-        $validRows = $tbody.rows | Where-Object {
-            $cellImage = $_.cells[4].GetElementsByTagName("a")[0].href
-            $sourceInFolder -notcontains $cellImage
+
+$jobs = @()
+$failedJobs = @()
+$batchsize = 10
+
+
+Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Starting process"
+ForEach ($tbody in $tableBody){
+    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Finding rows with new images"
+    #remove rows where the image is already downloaded
+    $validRows = $tbody.rows | Where-Object {
+        $cellImage = $_.cells[4].GetElementsByTagName("a")[0].href
+        $sourceInFolder -notcontains $cellImage
+    }
+
+    if ($validRows.Count -eq 0) {
+        Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') No new images found!"
+        continue
+    }
+
+
+
+    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Starting Downloads"
+    Write-Host "$($validRows.Count) images to download"
+    Start-Sleep 20
+    ForEach ($row in $validRows){
+        if($jobs.Count -ge $batchsize){
+            Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Waiting for batch jobs to complete..."
+
+
+            
+            Wait-Job -Job $jobs | Out-Null
+            Get-Job
+            $failedJobs += Get-Job | Where-Object { $_.State -eq "Failed" }
+            
+            #Get-Job | Where-Object { $_.State -in @( "Completed") } | Receive-job
+            Get-Job | Where-Object { $_.State -in @("Failed", "Completed") } | Remove-Job
+            $jobs = @($jobs | Where-Object { $_.State -notin @("Completed", "Failed") })
+
+            Write-host ""
+            #$failedJobs | Receive-Job
+            
+
         }
-        Write-Host "Starting Downloads"
-        ForEach ($row in $validRows)
-        {
-            $number++
-            $cellCategory = CleanPathBreakingSymbols $row.cells[0].innerText
-            $cellChallenge = CleanPathBreakingSymbols $row.cells[1].innerText
-            $cellDifficulty = CleanPathBreakingSymbols $row.cells[2].innerText
-            $cellRun = CleanPathBreakingSymbols $row.cells[3].innerText
+            
+        Write-Host "$($row.cells[4].GetElementsByTagName("a")[0].href)"
+        $jobs += Start-ThreadJob -ThrottleLimit 3 -ScriptBlock {
+            param ($row, $path, $CleanPathBreakingSymbolsFunction, $GetImageExtensionFunction, $jobId)
+            $success = $false
+            $cellCategory = & $CleanPathBreakingSymbolsFunction $row.cells[0].innerText
+            $cellChallenge = & $CleanPathBreakingSymbolsFunction $row.cells[1].innerText
+            $cellDifficulty = & $CleanPathBreakingSymbolsFunction $row.cells[2].innerText
+            $cellRun = & $CleanPathBreakingSymbolsFunction $row.cells[3].innerText
             $cellImage = $row.cells[4].GetElementsByTagName("a")[0].href
+            $creator = & $CleanPathBreakingSymbolsFunction $row.cells[5].innerText
             $imageExtension = $cellImage.Split(".")[-1]
             $imageExtension = $imageExtension.Split("/")[0] #some url are weird like http://i.imgur.com/xxxxx.png/yyyyy
-            Write-Host $number
-            if ($CellRun -eq "0")
-            {
-                $status = "Participant"
-            }
-            else
-            {
-                $status = "Completed"
-            }
+            
+
+            #Removing dots at the end of directory
+            #windows allows creating of folder with dots be removes them internaly
+            #the means i can create a file with a dot at the end of dir name
+            #but when i use the same path to remove the item windows  doesn't find it because it removed the dots
+            $cellCategory = $cellCategory -replace '\.+$', ''
+            $cellChallenge = $cellChallenge -replace '\.+$', ''
+            
             $dirPath="$path\$cellCategory\$cellChallenge"
             
             #---check if there dir for to store the image create it if needed
@@ -95,63 +134,64 @@ try {
                     Write-Host "folder couldn't be created"
                     Write-Host "Path $dirPath"
                     Write-Host "challenge $cellChallenge"
-                    Write-Host ("Error creating folder: $($_.Exception.Message)")
-                    exit 1
-
+                    throw ("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Error creating folder: $($_.Exception.Message)")
                 }
             }
             #Load Image from url
+
             try{
-                $Image = Invoke-WebRequest -Uri $cellImage -UseBasicParsing
-                
-                $baseName = "$cellChallenge $status x$cellRun"
+                $Image = Invoke-WebRequest -Uri $cellImage -UseBasicParsing               
+                $baseName = "$($cellChallenge)_x$cellRun"
                 $numberFiles = (Get-ChildItem -LiteralPath $dirPath -File -Filter "*$baseName*").Count
-                Write-Host "1"
                 #the extension in the image url might not be the correct like https://i.imgur.com/xxxxxx.png 
                 #can actually be a gif so i need to check the codec of the image and saved in a correct file extension
-                $extension = Get-ImageExtension $Image.Headers["Content-Type"]
-                $outputFile = "$dirPath\$($baseName)_$(($numberFiles+1).ToString("D3"))$extension"
-                Write-Host "2"
-                $Image.Content | Set-Content -LiteralPath $outputFile -Encoding Byte
-                Write-Host "3"
-                Write-Host "$outputFile"
+                $extension = & $GetImageExtensionFunction $Image.Headers["Content-Type"]
+                $timestamp = Get-Date -Format "yyyyMMdd_HHmmssfff"
+                #$outputFile = "$dirPath\$($baseName)_$(($numberFiles+1).ToString("D3"))$extension"
+                $outputFile = "$dirPath\$($baseName)_$($timestamp)-$($jobId)$extension"
+                [System.IO.File]::WriteAllBytes($outputFile, $Image.Content)
+                #$Image.Content | Set-Content -LiteralPath $outputFile -Encoding Byte
+                $Image = $null # Force release of image (no variable is referencing)
             } catch {
-                Write-host ("$cellChallenge image could not be downloaded")
-                Write-Host ("Path - $outputFile")
-                Write-Host ("Error downloading image: $($_.Exception.Message)")
-                exit 1
+                    Write-host ("$cellChallenge image could not be downloaded")
+                    Write-Host ("Path - $outputFile")
+                    Write-Host $cellImage
+                    throw ("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Error downloading image: $($_.Exception.Message)")               
             }
 
-            try{
-                # $outputFile | Out-File "param.txt" -Encoding utf8
-                # exiftool -xmp:Source=$cellImage -@ "param.txt"
-                # 
-                exiftool -xmp:Source=$cellImage $outputFile
 
+            try{
+                $file = "$jobId.txt"
+                $outputFile | Out-File -FilePath $file -Encoding utf8
+                exiftool -xmp:Source=$cellImage -@ $file -q 
+                Remove-item -LiteralPath $file
+                
                 #exiftool sometimes exits without terminal error so i need to throw error based one the exitcode
                 if ($LASTEXITCODE -ne 0) {
                     throw "ExifTool failed to process file"
                 }
             } catch {
                 Write-Host "could't add source to image metada"
-                Write-Host "path: $dirPath File $baseName"
-                Write-Host ("Error adding metadata to file: $($_.Exception.Message)")
-                Remove-Item -Path "$($outputFile)"
-                exit 1
+                Write-Host "path: $dirPath"
+                Write-Host "File $baseName"
+                Write-host "job: $jobId"
+                Remove-Item -LiteralPath "$($outputFile)"
+                throw ("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Error adding metadata to file: $($_.Exception.Message)")              
             }
 
             try{
                 Remove-Item -LiteralPath "$($outputFile)_original"
             } catch {
-                Write-Host "could delete backup file created by exiftool"
-                Write-Host ("Error deleting BackupFile: $($_.Exception.Message)")
-                exit 1
+                Write-Host "$($outputFile)_original"
+                Write-Host "couldn't delete backup file created by exiftool"
+                throw ("$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Error deleting BackupFile: $($_.Exception.Message)")
             }   
-        }            
-    }
-} catch {
-    Write-Host ("Error in Main Loop: $($_.Exception.Message)")
-    Write-Host ("")
+            WRite-Host $outputFile
+            
+        } -ArgumentList $row, $path, ${function:CleanPathBreakingSymbols}, ${function:Get-ImageExtension}, $((Get-Job | Sort-Object Id -Descending | Select-Object -First 1).Id)
+    }            
 }
+
+$failedJobs | Receive-job
 
 
