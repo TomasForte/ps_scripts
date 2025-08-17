@@ -23,8 +23,8 @@ ForEach-Object{
                         -of compact=p=0:nk=1
 
         if ($codec -ep "opus"){
-            $output = "$($_.DirectoryName)\$($_.BaseName).opus"
-            ffmpeg -i "$($_.FullName)" -c:a:0 copy $output
+            $outputFile = "$($_.DirectoryName)\$($_.BaseName).opus"
+            ffmpeg -i "$($_.FullName)" -c:a:0 copy $outputFile
             if (Test-Path $outputFile) {
                 Remove-Item -Force "$($_.FullName)"
             }
